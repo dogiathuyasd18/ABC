@@ -1,5 +1,3 @@
-"""Check the cleaned HDF5 file against the challenge sampling rules."""
-
 import argparse
 from pathlib import Path
 

@@ -1,3 +1,8 @@
 data/
 checkpoints/
+experiments/
+reports/
+.pytest_cache/
+**/__pycache__/
 .DS_Store
+*.pyc

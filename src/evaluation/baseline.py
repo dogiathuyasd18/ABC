@@ -1,14 +1,18 @@
-"""Constant-velocity extrapolation over the 100 ms horizon.
-
-The last body-frame step is repeated. Sample k (1..20) is that step times k.
-"""
+"""Parameter-free baselines for the 20-sample (0.2 s) horizon."""
 
 import torch
 
-from src.utils.quaternions import apply_body_rotvec, quat_inv, quat_mul, quat_to_rotvec
+from src.utils.quaternions import apply_body_rotvec, quat_inv, quat_mul, quat_normalize, quat_to_rotvec
+
+
+def last_pose_quaternions(windows, context, horizon):
+    """Persistence: copy the last context quaternion for every future step."""
+    q_last = quat_normalize(windows[:, context - 1])
+    return q_last.unsqueeze(1).expand(-1, horizon, -1).contiguous()
 
 
 def constant_velocity_quaternions(windows, context, horizon):
+    """Repeat the last body-frame step. Sample k is that step times k."""
     context_quat = windows[:, :context]
     q_prev = context_quat[:, -2]
     q_last = context_quat[:, -1]

@@ -1,50 +1,33 @@
+"""Validate an HDF5 corpus and print filtering vs usability counts."""
+
 import argparse
 from pathlib import Path
 
-import h5py
-import numpy as np
-
-from src.data.dataset import MIN_WINDOW, list_users, resample_session, split_users
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.prep.config import PROJECT_ROOT, WINDOW_SAMPLES
+from src.prep.hdf5 import list_users, session_summaries
+from src.prep.windows import count_windows, session_is_trainable
+from src.data.dataset import split_users
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--h5", type=Path, default=PROJECT_ROOT / "data" / "processed" / "head_pose.h5")
+    parser.add_argument("--h5", type=Path, default=PROJECT_ROOT / "data" / "processed" / "head_pose_v2.h5")
+    parser.add_argument("--legacy-h5", type=Path, default=PROJECT_ROOT / "data" / "processed" / "head_pose.h5")
     args = parser.parse_args()
-
-    users = list_users(args.h5)
-    train_users, val_users = split_users(users)
-    sessions = 0
-    samples = 0
-    short = 0
-    rates = []
-    resampled = 0
-
-    with h5py.File(args.h5, "r") as h5_file:
-        print("quaternion_order:", h5_file.attrs.get("quaternion_order"))
-        for user_id in users:
-            for session_id in h5_file["users"][user_id]["sessions"]:
-                group = h5_file["users"][user_id]["sessions"][session_id]
-                count = int(group["quaternions"].shape[0])
-                sessions += 1
-                samples += count
-                if count < MIN_WINDOW:
-                    short += 1
-                rates.append(float(group.attrs["sampling_rate"]))
-                pieces = resample_session(group["timestamps"][:], group["quaternions"][:])
-                resampled += sum(len(piece) for piece in pieces)
-
-    print(f"Users: {len(users)}")
-    print(f"Train users: {len(train_users)} | Val users: {len(val_users)}")
-    print(f"Val user ids: {val_users}")
-    print(f"Sessions: {sessions}")
-    print(f"Raw samples: {samples}")
-    print(f"Sessions shorter than {MIN_WINDOW} samples: {short}")
-    print(f"Sampling rate Hz min/median/max: {min(rates):.2f} / {np.median(rates):.2f} / {max(rates):.2f}")
-    print(f"Samples after 100 Hz SLERP: {resampled}")
+    path = args.h5 if args.h5.exists() else args.legacy_h5
+    users = list_users(path)
+    train_users, val_users = split_users(users) if users else ([], [])
+    rows = session_summaries(path)
+    trainable = sum(1 for row in rows if session_is_trainable(row["segment_lengths"]))
+    windows = sum(count_windows(row["segment_lengths"]) for row in rows)
+    print(f"file: {path}")
+    print(f"users: {len(users)}")
+    print(f"train/val users: {len(train_users)}/{len(val_users)}")
+    print(f"sessions: {len(rows)}")
+    print(f"sessions with a {WINDOW_SAMPLES}-sample window: {trainable}")
+    print(f"usable windows (stride 20): {windows}")
+    print(f"resampled samples: {sum(row['n_resampled'] for row in rows)}")
+    print(f"interpolated samples: {sum(row['n_interpolated'] for row in rows)}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,23 @@
-"""Data preparation and preprocessing for the 9th ABC Challenge."""
+"""Data preparation and preprocessing for the 9th ABC Challenge.
 
-SCHEMA_VERSION = "2.0"
-PREPROCESSING_VERSION = "2.0"
-SPEC_VERSION = "9th-abc-challenge-data-page"
+Session filtering (rate, sweep, velocity) is separate from training
+usability (whether a cleaned, resampled segment can yield a 400+20 window).
+"""
+
+from src.prep.config import (
+    CONTEXT_SAMPLES,
+    HORIZON_SAMPLES,
+    PREPROCESSING_VERSION,
+    SCHEMA_VERSION,
+    SPEC_VERSION,
+    WINDOW_SAMPLES,
+)
+
+__all__ = [
+    "CONTEXT_SAMPLES",
+    "HORIZON_SAMPLES",
+    "PREPROCESSING_VERSION",
+    "SCHEMA_VERSION",
+    "SPEC_VERSION",
+    "WINDOW_SAMPLES",
+]

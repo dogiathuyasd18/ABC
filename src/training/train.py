@@ -24,7 +24,8 @@ from src.utils.quaternions import apply_body_rotvec
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose.h5"
+DEFAULT_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose_v2.h5"
+LEGACY_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose.h5"
 
 
 def evaluate(model, loader, device, context):
@@ -51,15 +52,16 @@ def evaluate(model, loader, device, context):
 def train(args):
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
-    train_users, val_users = split_users(list_users(args.h5), args.val_fraction)
+    h5_path = args.h5 if args.h5.exists() else LEGACY_H5
+    train_users, val_users = split_users(list_users(h5_path), args.val_fraction)
     print(f"Train users ({len(train_users)}): {train_users}")
     print(f"Val users ({len(val_users)}): {val_users}")
 
     train_set = HeadPoseWindowDataset(
-        args.h5, train_users, context=args.context, horizon=args.horizon, stride=args.stride
+        h5_path, train_users, context=args.context, horizon=args.horizon, stride=args.stride
     )
     val_set = HeadPoseWindowDataset(
-        args.h5, val_users, context=args.context, horizon=args.horizon, stride=args.stride
+        h5_path, val_users, context=args.context, horizon=args.horizon, stride=args.stride
     )
     print(f"Train windows: {len(train_set)} | Val windows: {len(val_set)}")
     if len(train_set) == 0 or len(val_set) == 0:
@@ -167,7 +169,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "checkpoints")
     parser.add_argument("--context", type=int, default=CONTEXT_LENGTH)
     parser.add_argument("--horizon", type=int, default=HORIZON)
-    parser.add_argument("--stride", type=int, default=40)
+    parser.add_argument("--stride", type=int, default=20)
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--layers", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=256)

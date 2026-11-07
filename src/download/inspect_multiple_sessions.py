@@ -1,4 +1,10 @@
 
+"""Legacy local TAR filter. Prefer `python -m src.prep.pipeline filter-local`.
+
+Sweep/velocity math here is the original tutorial implementation and is
+locked by tests against `src.prep.filtering`.
+"""
+
 import csv
 import random
 import tarfile

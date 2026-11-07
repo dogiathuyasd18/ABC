@@ -1,34 +1,31 @@
-"""User-disjoint windows from the cleaned head-pose HDF5 file.
+"""User-disjoint windows from resampled head-pose segments.
 
-Sessions are resampled onto a uniform 100 Hz grid. Gaps longer than half a
-second split the session instead of being invented by interpolation.
+HDF5 stores sequences. This module only builds a window index: 400 context
+samples plus 20 targets, never crossing a session or a gap cut.
 """
 
 from pathlib import Path
 
-import h5py
-import numpy as np
 import torch
-from scipy.spatial.transform import Rotation, Slerp
 from torch.utils.data import Dataset
 
+from src.prep.config import CONTEXT_SAMPLES, HORIZON_SAMPLES, TARGET_SAMPLE_RATE_HZ, WindowConfig
+from src.prep.hdf5 import iter_segments, list_users as hdf5_list_users
+from src.prep.resampling import resample_session
+from src.prep.windows import index_segment
 from src.utils.quaternions import apply_body_rotvec, geodesic_degrees, quat_inv, quat_mul, quat_to_rotvec
 
-
-CONTEXT_LENGTH = 100
-HORIZON = 20
-SAMPLE_RATE_HZ = 100.0
-MAX_GAP_SECONDS = 0.5
-MIN_WINDOW = CONTEXT_LENGTH + HORIZON
+CONTEXT_LENGTH = CONTEXT_SAMPLES
+HORIZON = HORIZON_SAMPLES
+SAMPLE_RATE_HZ = TARGET_SAMPLE_RATE_HZ
+MIN_WINDOW = CONTEXT_SAMPLES + HORIZON_SAMPLES
 
 
 def list_users(h5_path):
-    with h5py.File(h5_path, "r") as h5_file:
-        return sorted(h5_file["users"].keys())
+    return hdf5_list_users(Path(h5_path))
 
 
 def split_users(user_ids, val_fraction=0.2):
-    """Hold out whole users. Windows from the same person never cross the split."""
     if not user_ids:
         raise ValueError("No users in the HDF5 file")
     val_count = max(1, int(round(len(user_ids) * val_fraction)))
@@ -37,59 +34,23 @@ def split_users(user_ids, val_fraction=0.2):
     return user_ids[:-val_count], user_ids[-val_count:]
 
 
-def _hemisphere_align(quaternions):
-    aligned = np.array(quaternions, copy=True)
-    for index in range(1, len(aligned)):
-        if np.dot(aligned[index - 1], aligned[index]) < 0.0:
-            aligned[index] *= -1.0
-    return aligned
-
-
-def resample_session(timestamps, quaternions, sample_rate_hz=SAMPLE_RATE_HZ, max_gap_seconds=MAX_GAP_SECONDS):
-    """SLERP each contiguous stretch onto a uniform grid. Long dropouts split the session."""
-    timestamps = np.asarray(timestamps, dtype=np.float64)
-    quaternions = _hemisphere_align(np.asarray(quaternions, dtype=np.float64))
-    if len(timestamps) < 2:
-        return []
-
-    gap_cuts = np.where(np.diff(timestamps) > max_gap_seconds)[0] + 1
-    segments = []
-    step = 1.0 / sample_rate_hz
-
-    for indices in np.split(np.arange(len(timestamps)), gap_cuts):
-        if len(indices) < 2:
-            continue
-        segment_time = timestamps[indices]
-        segment_quat = quaternions[indices]
-        keep = np.ones(len(segment_time), dtype=bool)
-        keep[1:] = np.diff(segment_time) > 1e-6
-        segment_time = segment_time[keep]
-        segment_quat = segment_quat[keep]
-        if len(segment_time) < 2 or segment_time[-1] - segment_time[0] < step:
-            continue
-
-        grid = np.arange(segment_time[0], segment_time[-1], step)
-        if len(grid) < MIN_WINDOW:
-            continue
-
-        resampled = Slerp(segment_time, Rotation.from_quat(segment_quat))(grid).as_quat()
-        resampled = _hemisphere_align(resampled).astype(np.float32)
-        segments.append(resampled)
-
-    return segments
+def resample_session_legacy(timestamps, quaternions):
+    """Kept for old session-level HDF5 rows. Uses the documented gap threshold."""
+    result = resample_session(timestamps, quaternions)
+    return [segment.quaternions for segment in result.segments]
 
 
 def load_segments(h5_path, user_ids):
     segments = []
-    with h5py.File(h5_path, "r") as h5_file:
-        users = h5_file["users"]
-        for user_id in user_ids:
-            sessions = users[user_id]["sessions"]
-            for session_id in sessions:
-                group = sessions[session_id]
-                pieces = resample_session(group["timestamps"][:], group["quaternions"][:])
-                for piece in pieces:
-                    segments.append((user_id, session_id, piece))
+    for item in iter_segments(Path(h5_path), user_ids):
+        attrs = item.get("session_attrs") or {}
+        already_resampled = bool(attrs.get("resampled", item["segment_id"] != "legacy"))
+        if item["segment_id"] == "legacy" and not already_resampled:
+            result = resample_session(item["timestamps"], item["quaternions"])
+            for index, piece in enumerate(result.segments):
+                segments.append((item["user_id"], item["session_id"], f"legacy-{index:04d}", piece.quaternions))
+        else:
+            segments.append((item["user_id"], item["session_id"], item["segment_id"], item["quaternions"]))
     return segments
 
 
@@ -98,27 +59,26 @@ class HeadPoseWindowDataset(Dataset):
         self.context = context
         self.horizon = horizon
         self.window = context + horizon
+        cfg = WindowConfig(context_samples=context, horizon_samples=horizon, stride=stride)
         self.segments = load_segments(h5_path, user_ids)
         self.index = []
-        for segment_id, (_, _, quaternions) in enumerate(self.segments):
-            last_start = len(quaternions) - self.window
-            if last_start < 0:
-                continue
-            for start in range(0, last_start + 1, stride):
-                self.index.append((segment_id, start))
+        for segment_id, (user_id, session_id, name, quaternions) in enumerate(self.segments):
+            for window in index_segment(user_id, session_id, name, len(quaternions), cfg):
+                self.index.append((segment_id, window.start))
 
     def __len__(self):
         return len(self.index)
 
     def __getitem__(self, item):
         segment_id, start = self.index[item]
-        quaternions = self.segments[segment_id][2]
+        quaternions = self.segments[segment_id][3]
         window = quaternions[start : start + self.window]
+        if len(window) != self.window:
+            raise RuntimeError("Window shorter than context+horizon")
         return torch.from_numpy(window.copy())
 
 
 def context_targets(windows, context):
-    """windows: (batch, context + horizon, 4) xyzw on a 100 Hz grid."""
     context_quat = windows[:, :context]
     future = windows[:, context:]
     deltas = quat_to_rotvec(quat_mul(quat_inv(context_quat[:, :-1]), context_quat[:, 1:]))
@@ -133,6 +93,5 @@ def predict_quaternions(model, windows, context):
 
 
 def official_loss(prediction, future):
-    """Geodesic error. The scored figure is the angle at the 20th sample."""
     degrees = geodesic_degrees(prediction, future)
     return degrees.mean() + degrees[:, -1].mean(), degrees

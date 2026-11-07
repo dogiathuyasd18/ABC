@@ -1,4 +1,6 @@
 
+"""Legacy batch downloader. Prefer `python -m src.prep.pipeline download`."""
+
 from huggingface_hub import HfApi, hf_hub_download
 from pathlib import Path
 import subprocess

@@ -118,6 +118,9 @@ class PathConfig:
     session_log: Path = field(
         default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "session_filter.csv"
     )
+    passed_sessions_csv: Path = field(
+        default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "passed_sessions.csv"
+    )
     reject_log: Path = field(
         default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "session_rejects.csv"
     )
@@ -125,7 +128,7 @@ class PathConfig:
         default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "head_pose_clean.h5"
     )
     resampled_h5: Path = field(
-        default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "head_pose_v2.h5"
+        default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "head_pose_full_v3.h5"
     )
     legacy_h5: Path = field(
         default_factory=lambda: PROJECT_ROOT / "data" / "processed" / "head_pose.h5"

@@ -1,8 +1,17 @@
-data/
-checkpoints/
-experiments/
-reports/
-.pytest_cache/
-**/__pycache__/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+
+# System files
 .DS_Store
-*.pyc

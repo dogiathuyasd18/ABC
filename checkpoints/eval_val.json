@@ -1,0 +1,56 @@
+{
+  "model": {
+    "n_windows": 2290,
+    "official_step20_mean_deg": 6.183208465576172,
+    "step20_median_deg": 4.854567050933838,
+    "horizon_mean_deg": [
+      0.2551898658275604,
+      0.5451743006706238,
+      0.9159322381019592,
+      1.2702341079711914,
+      1.6140925884246826,
+      1.9752163887023926,
+      2.3324522972106934,
+      2.650269031524658,
+      2.9410271644592285,
+      3.2836296558380127,
+      3.57464337348938,
+      3.920708656311035,
+      4.249955177307129,
+      4.5216169357299805,
+      4.792379379272461,
+      5.105189800262451,
+      5.384057521820068,
+      5.665489196777344,
+      5.899785995483398,
+      6.183208465576172
+    ],
+    "user_macro_step20_mean_deg": 6.215821663538615,
+    "per_user_step20_mean_deg": {
+      "00743d56-a912-4ec7-a9d4-3e6e22756488": 6.778611183166504,
+      "00e5a085-dbaf-46c4-abbc-b45edde3d662": 3.584404230117798,
+      "00f4ddc2-a595-47a4-8883-16284807a850": 8.284449577331543
+    },
+    "aggregation": "official figure is window-weighted mean of sample-20 geodesic degrees",
+    "units": "degrees"
+  },
+  "constant_velocity": {
+    "official_step20_mean_deg": 8.9246826171875
+  },
+  "last_pose": {
+    "official_step20_mean_deg": 6.90534782409668
+  },
+  "beats_constant_velocity": true,
+  "beats_last_pose": true,
+  "n_users": 3,
+  "parameters": 17148,
+  "split_name": "val",
+  "users": [
+    "00e5a085-dbaf-46c4-abbc-b45edde3d662",
+    "00743d56-a912-4ec7-a9d4-3e6e22756488",
+    "00f4ddc2-a595-47a4-8883-16284807a850"
+  ],
+  "checkpoint": "checkpoints/head_pose_gru.pt",
+  "h5": "/Users/dogiathuy/head-pose-prediction/data/processed/head_pose_v2.h5",
+  "note": "This is a local user-held-out split, not the unreleased ST test set. The official accuracy is mean geodesic degrees at sample 20."
+}

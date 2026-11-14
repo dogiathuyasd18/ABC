@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -17,17 +18,24 @@ from src.data.dataset import (
     HeadPoseWindowDataset,
     context_targets,
     list_users,
+    SAMPLE_RATE_HZ,
 )
 from src.data.splits import split_users
+
 from src.evaluation.baseline import (
     constant_velocity_quaternions,
     last_pose_quaternions,
 )
 from src.evaluation.metrics import window_weighted_step20
+
 from src.models.gru import HeadPoseGRU
+from src.models.kinematics import KinematicsGRU
+from src.models.kinematics_tcn import KinematicsTCN
 from src.models.msrtn import MultiScaleResidualTemporalNetwork
 from src.models.predict import decode_model
+
 from src.prep.config import PROJECT_ROOT
+
 from src.runtime import (
     experiment_dir,
     experiment_manifest,
@@ -35,6 +43,7 @@ from src.runtime import (
     seed_everything,
     write_json,
 )
+
 from src.training.loss import geodesic_loss
 
 
@@ -43,49 +52,74 @@ DEFAULT_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose_v2.h5"
 
 def resolve_h5(path: Path) -> Path:
     path = path.expanduser().resolve()
+
     if not path.is_file():
         raise FileNotFoundError(f"HDF5 file not found: {path}")
+
     return path
 
 
 def validate_args(args):
-    args.model = getattr(args, "model", "gru")
     args.d_model = getattr(args, "d_model", 64)
     args.blocks = getattr(args, "blocks", 3)
     args.dropout = getattr(args, "dropout", 0.1)
 
     if args.context < 2:
         raise ValueError("--context must be at least 2")
+
     if args.horizon < 1:
         raise ValueError("--horizon must be positive")
+
     if args.stride < 1:
         raise ValueError("--stride must be positive")
+
     if args.hidden < 1 or args.layers < 1:
         raise ValueError("--hidden and --layers must be positive")
+
     if args.d_model < 4:
         raise ValueError("--d-model must be at least 4")
+
     if args.blocks < 1:
         raise ValueError("--blocks must be positive")
+
     if not 0.0 <= args.dropout < 1.0:
         raise ValueError("--dropout must be in [0, 1)")
-    if args.model not in ("gru", "msrtn"):
+
+    supported_models = (
+        "gru",
+        "msrtn",
+        "kinematics",
+        "kinematics_tcn",
+    )
+
+    if args.model not in supported_models:
         raise ValueError(f"Unsupported model: {args.model}")
+
     if args.batch_size < 1 or args.epochs < 1:
         raise ValueError("--batch-size and --epochs must be positive")
+
     if args.lr <= 0 or args.grad_clip <= 0:
         raise ValueError("--lr and --grad-clip must be positive")
+
     if args.patience < 0:
         raise ValueError("--patience cannot be negative")
+
     if not 0 < args.val_fraction < 1:
         raise ValueError("--val-fraction must be between 0 and 1")
+
     if not 0 <= args.test_fraction < 1:
         raise ValueError("--test-fraction must be between 0 and 1")
+
     if args.val_fraction + args.test_fraction >= 1:
         raise ValueError(
             "Validation and test fractions must sum to less than 1"
         )
+
     if args.max_steps < 0:
         raise ValueError("--max-steps cannot be negative")
+
+    if args.log_interval < 1:
+        raise ValueError("--log-interval must be positive")
 
 
 def build_model(args):
@@ -96,12 +130,32 @@ def build_model(args):
             horizon=args.horizon,
         )
 
+    if args.model == "kinematics":
+        return KinematicsGRU(
+            hidden_size=args.hidden,
+            num_layers=args.layers,
+            horizon=args.horizon,
+            dt=1.0 / SAMPLE_RATE_HZ,
+            dropout=args.dropout,
+        )
+
     if args.model == "msrtn":
         return MultiScaleResidualTemporalNetwork(
             d_model=args.d_model,
             num_blocks=args.blocks,
             horizon=args.horizon,
             dropout=args.dropout,
+        )
+
+    if args.model == "kinematics_tcn":
+        return KinematicsTCN(
+            hidden_size=args.hidden,
+            horizon=args.horizon,
+            dt=1.0 / SAMPLE_RATE_HZ,
+            dropout=args.dropout,
+            residual_scale=0.1,
+            num_blocks=7,
+            kernel_size=3,
         )
 
     raise ValueError(f"Unsupported model: {args.model}")
@@ -149,15 +203,34 @@ def capture_rng_state():
 
 
 def restore_rng_state(state):
-    if not state:
+    if state is None:
         return
 
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
 
-    if torch.cuda.is_available() and "cuda" in state:
+    torch.set_rng_state(
+        torch.as_tensor(
+            state["torch"],
+            dtype=torch.uint8,
+            device="cpu"
+        )
+    )
+
+    if torch.cuda.is_available() and state.get("cuda") is not None:
         torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _predict(model, windows, context):
+    deltas, q_last, future = context_targets(windows, context)
+
+    prediction, _hidden = decode_model(
+        model,
+        deltas,
+        q_last,
+    )
+
+    return prediction, future
 
 
 @torch.no_grad()
@@ -173,13 +246,23 @@ def evaluate(model, loader, device, context, horizon):
 
     for windows in loader:
         windows = windows.to(device)
-        prediction, future = _predict(model, windows, context)
+
+        prediction, future = _predict(
+            model,
+            windows,
+            context,
+        )
 
         const_vel = constant_velocity_quaternions(
-            windows, context, horizon
+            windows,
+            context,
+            horizon,
         )
+
         last_pose = last_pose_quaternions(
-            windows, context, horizon
+            windows,
+            context,
+            horizon,
         )
 
         batch_size = windows.shape[0]
@@ -207,12 +290,6 @@ def evaluate(model, loader, device, context, horizon):
     return scores, count
 
 
-def _predict(model, windows, context):
-    deltas, q_last, future = context_targets(windows, context)
-    prediction, _hidden = decode_model(model, deltas, q_last)
-    return prediction, future
-
-
 def export_onnx(model, path: Path, context: int, device: torch.device):
     class RotvecOnly(torch.nn.Module):
         def __init__(self, predictor):
@@ -224,7 +301,13 @@ def export_onnx(model, path: Path, context: int, device: torch.device):
             return rotvecs
 
     model.eval()
-    example = torch.zeros(1, context - 1, 3, device=device)
+
+    example = torch.zeros(
+        1,
+        context - 1,
+        3,
+        device=device,
+    )
 
     torch.onnx.export(
         RotvecOnly(model),
@@ -242,6 +325,7 @@ def train(args):
 
     device = resolve_device(args.device)
     h5_path = resolve_h5(args.h5)
+
     run_config = training_config(args, h5_path)
 
     users = list_users(h5_path)
@@ -265,7 +349,11 @@ def train(args):
             "and split fractions."
         )
 
-    out = experiment_dir(args.output_dir, args.name, args.seed)
+    out = experiment_dir(
+        args.output_dir,
+        args.name,
+        args.seed,
+    )
 
     split = {
         "train_users": train_users,
@@ -326,7 +414,10 @@ def train(args):
 
     model = build_model(args).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+    )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -336,7 +427,11 @@ def train(args):
     )
 
     use_amp = args.amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=use_amp,
+    )
 
     start_epoch = 1
     best_val = float("inf")
@@ -360,10 +455,18 @@ def train(args):
         saved_config = checkpoint.get("training_config")
 
         if saved_config != run_config:
+            print("\n=== RESUME CONFIG MISMATCH ===")
+            for key in sorted(set(saved_config) | set(run_config)):
+                old = saved_config.get(key)
+                new = run_config.get(key)
+
+                if old != new:
+                    print(f"{key}:")
+                    print(f"  checkpoint = {old}")
+                    print(f"  current    = {new}")
+
             raise ValueError(
-                "Resume configuration does not match the current run. "
-                "Use the same model, HDF5 file and training parameters. "
-                "--epochs may be increased."
+                "Resume configuration does not match the current run."
             )
 
         if checkpoint.get("split") != split:
@@ -393,18 +496,24 @@ def train(args):
     print(f"Trainable parameters: {model.count_parameters()}")
     print(f"AMP enabled: {use_amp}")
     print(f"Experiment directory: {out}")
+    print(f"Log interval: every {args.log_interval} batches")
+
+    total_batches = len(train_loader)
 
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
 
-        running_loss = 0.0
+        epoch_start = time.perf_counter()
+
+        running_loss = torch.zeros((), device=device)
         seen = 0
 
         for step, windows in enumerate(train_loader, start=1):
             windows = windows.to(device)
 
             deltas, q_last, future = context_targets(
-                windows, args.context
+                windows,
+                args.context,
             )
 
             optimizer.zero_grad(set_to_none=True)
@@ -414,11 +523,17 @@ def train(args):
                 enabled=use_amp,
             ):
                 prediction, _hidden = decode_model(
-                    model, deltas, q_last
+                    model,
+                    deltas,
+                    q_last,
                 )
-                loss, _degrees = geodesic_loss(prediction, future)
 
-            if not torch.isfinite(loss):
+                loss, _degrees = geodesic_loss(
+                    prediction,
+                    future,
+                )
+
+            if not torch.isfinite(loss).item():
                 raise RuntimeError(
                     f"Non-finite training loss at epoch {epoch}, step {step}"
                 )
@@ -435,14 +550,41 @@ def train(args):
             scaler.update()
 
             batch_size = windows.shape[0]
-            running_loss += loss.detach().item() * batch_size
+
+            running_loss += loss.detach() * batch_size
             seen += batch_size
+
+            if (
+                step % args.log_interval == 0
+                or step == 1
+                or step == total_batches
+            ):
+                elapsed = time.perf_counter() - epoch_start
+                batches_per_second = step / max(elapsed, 1e-9)
+
+                print(
+                    f"Epoch {epoch}/{args.epochs} "
+                    f"| Batch {step}/{total_batches} "
+                    f"| {100.0 * step / total_batches:.1f}% "
+                    f"| {batches_per_second:.2f} batches/s "
+                    f"| Elapsed {elapsed / 60:.1f} min",
+                    flush=True,
+                )
 
             if args.max_steps and step >= args.max_steps:
                 break
 
         if seen == 0:
             raise RuntimeError("No training batches were processed")
+
+        train_loss = float(
+            (running_loss / seen).item()
+        )
+
+        print(
+            f"Epoch {epoch}: training finished; running validation...",
+            flush=True,
+        )
 
         val_scores, val_count = evaluate(
             model,
@@ -454,7 +596,6 @@ def train(args):
 
         scheduler.step(val_scores["model"])
 
-        train_loss = running_loss / seen
         improved = val_scores["model"] < best_val - 1e-6
 
         if improved:
@@ -475,13 +616,17 @@ def train(args):
 
         history.append(row)
 
+        epoch_elapsed = time.perf_counter() - epoch_start
+
         print(
             f"Epoch {epoch}/{args.epochs}: "
             f"train_loss={train_loss:.6f} "
             f"val_step20={val_scores['model']:.4f} deg "
             f"const_vel={val_scores['const_vel']:.4f} deg "
             f"last_pose={val_scores['last_pose']:.4f} deg "
-            f"lr={row['lr']:.2e}"
+            f"lr={row['lr']:.2e} "
+            f"time={epoch_elapsed / 60:.2f} min",
+            flush=True,
         )
 
         payload = {
@@ -499,7 +644,7 @@ def train(args):
             "context": args.context,
             "horizon": args.horizon,
             "quaternion_order": "x,y,z,w",
-            "sample_rate_hz": 100,
+            "sample_rate_hz": SAMPLE_RATE_HZ,
             "parameters": model.count_parameters(),
             "split": split,
             "history": history,
@@ -510,15 +655,17 @@ def train(args):
         }
 
         torch.save(payload, out / "last.pt")
+        print("  Saved last.pt (epoch {})".format(epoch), flush=True)
 
         if improved:
             torch.save(payload, out / "best.pt")
-            print(f"  Saved best.pt ({best_val:.4f} deg)")
+            print(f"  Saved best.pt ({best_val:.4f} deg)", flush=True)
 
         if args.patience and bad_epochs >= args.patience:
             print(
                 f"Early stopping after {args.patience} epochs "
-                "without validation improvement"
+                "without validation improvement",
+                flush=True,
             )
             break
 
@@ -559,9 +706,14 @@ def train(args):
                 args.context,
                 device,
             )
+
             print(f"Exported ONNX: {onnx_path}")
+
         except Exception as error:
-            print(f"Internal rotation-vector ONNX export skipped: {error}")
+            print(
+                f"Internal rotation-vector ONNX export skipped: {error}"
+            )
+
     else:
         print("No best checkpoint was produced; ONNX export skipped.")
 
@@ -573,20 +725,30 @@ def train(args):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Train the 9th ABC head-pose predictor"
+        description="Train head-pose forecasting models"
     )
 
     parser.add_argument("--h5", type=Path, default=DEFAULT_H5)
+
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=PROJECT_ROOT / "experiments",
     )
-    parser.add_argument("--name", default="head_pose_pilot")
+
+    parser.add_argument(
+        "--name",
+        default="head_pose_pilot",
+    )
 
     parser.add_argument(
         "--model",
-        choices=["gru", "msrtn"],
+        choices=[
+            "gru",
+            "msrtn",
+            "kinematics",
+            "kinematics_tcn",
+        ],
         default="gru",
     )
 
@@ -615,6 +777,13 @@ def parse_args(argv=None):
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--resume", type=Path, default=None)
+
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=100,
+        help="Print training progress every N batches",
+    )
 
     return parser.parse_args(argv)
 

@@ -17,14 +17,27 @@ from src.prep.timestamps import interval_stats, stats_as_dict, trim_startup
 
 
 def _compare(value: float, threshold: float, mode: str) -> bool:
+    if not np.isfinite(value) or not np.isfinite(threshold):
+        return False
     if mode == "greater_than":
-        return value > threshold
+        return bool(value > threshold)
     if mode == "greater_or_equal":
-        return value >= threshold
+        return bool(value >= threshold)
     raise ValueError(f"Unknown comparison: {mode}")
 
 
-def to_euler_xyz_degrees(quaternions: np.ndarray, euler_order: str = "xyz") -> np.ndarray:
+def to_euler_xyz_degrees(
+    quaternions: np.ndarray,
+    euler_order: str = "xyz",
+) -> np.ndarray:
+    quaternions = np.asarray(quaternions, dtype=np.float64)
+    if quaternions.ndim != 2 or quaternions.shape[1] != 4:
+        raise ValueError("quaternions must have shape (N, 4)")
+    if len(quaternions) == 0:
+        raise ValueError("quaternions are empty")
+    if not np.all(np.isfinite(quaternions)):
+        raise ValueError("Non-finite quaternion values")
+
     rotation = Rotation.from_quat(quaternions)
     angles = rotation.as_euler(euler_order, degrees=True)
     if not np.all(np.isfinite(angles)):
@@ -32,64 +45,104 @@ def to_euler_xyz_degrees(quaternions: np.ndarray, euler_order: str = "xyz") -> n
     return angles
 
 
+def _unwrap_euler_degrees(euler_angles: np.ndarray) -> np.ndarray:
+    radians = np.deg2rad(euler_angles)
+    return np.rad2deg(np.unwrap(radians, axis=0))
+
+
 def analyze_motion_windows(
     timestamps: np.ndarray,
     euler_angles: np.ndarray,
     cfg: FilterConfig | None = None,
 ) -> list[dict]:
-    """Official tutorial: non-overlapping 5 s windows, skip < 10 samples."""
+    """Compute motion statistics in complete, non-overlapping windows."""
     cfg = cfg or FilterConfig()
-    window_results = []
-    if len(timestamps) == 0:
-        return window_results
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    euler_angles = np.asarray(euler_angles, dtype=np.float64)
 
+    if timestamps.ndim != 1:
+        raise ValueError("timestamps must be one-dimensional")
+    if euler_angles.ndim != 2 or euler_angles.shape != (len(timestamps), 3):
+        raise ValueError("euler_angles must have shape (N, 3), matching timestamps")
+    if not np.all(np.isfinite(timestamps)) or not np.all(np.isfinite(euler_angles)):
+        raise ValueError("timestamps and Euler angles must be finite")
+    if len(timestamps) < 2:
+        return []
+    if np.any(np.diff(timestamps) <= 0):
+        raise ValueError("timestamps must be strictly increasing")
+
+    continuous_angles = _unwrap_euler_degrees(euler_angles)
+    window_results = []
     start_time = float(timestamps[0])
     end_time = float(timestamps[-1])
+    window_size = float(cfg.motion_window_seconds)
     window_start = start_time
-    window_size = cfg.motion_window_seconds
+    eps = max(1e-9, window_size * 1e-9)
 
-    while window_start + window_size <= end_time:
+    while window_start + window_size <= end_time + eps:
         window_end = window_start + window_size
         sample_mask = (timestamps >= window_start) & (timestamps < window_end)
         window_times = timestamps[sample_mask]
-        window_angles = euler_angles[sample_mask]
+        window_angles = continuous_angles[sample_mask]
 
-        if len(window_times) < cfg.min_valid_samples_per_window:
-            window_start += window_size
-            continue
+        if len(window_times) >= cfg.min_valid_samples_per_window:
+            interval_mask = (
+                (timestamps[:-1] >= window_start)
+                & (timestamps[1:] < window_end)
+            )
+            interval_durations = np.diff(timestamps)[interval_mask]
+            previous_angles = continuous_angles[:-1][interval_mask]
+            next_angles = continuous_angles[1:][interval_mask]
 
-        sweep = np.percentile(window_angles, 90, axis=0) - np.percentile(window_angles, 10, axis=0)
+            if len(interval_durations) > 0:
+                sweep = (
+                    np.percentile(window_angles, 90, axis=0)
+                    - np.percentile(window_angles, 10, axis=0)
+                )
+                raw_differences = next_angles - previous_angles
+                angle_diffs = np.abs(
+                    (raw_differences + 180.0) % 360.0 - 180.0
+                )
+                total_axis_motion = np.sum(angle_diffs, axis=0)
+                velocity = total_axis_motion / window_size
 
-        interval_mask = (timestamps[:-1] >= window_start) & (timestamps[1:] < window_end)
-        previous_angles = euler_angles[:-1][interval_mask]
-        next_angles = euler_angles[1:][interval_mask]
-        if len(previous_angles) == 0:
-            window_start += window_size
-            continue
+                window_results.append({
+                    "sweep": sweep,
+                    "velocity": velocity,
+                    "num_samples": int(len(window_times)),
+                    "num_intervals": int(len(interval_durations)),
+                    "duration_seconds": window_size,
+                })
 
-        angle_diffs = np.abs(next_angles - previous_angles)
-        wrapped = np.where(angle_diffs > 180.0, 360.0 - angle_diffs, angle_diffs)
-        velocity = np.sum(wrapped, axis=0) / window_size
-
-        window_results.append(
-            {
-                "sweep": sweep,
-                "velocity": velocity,
-                "num_samples": len(window_times),
-                "num_intervals": len(previous_angles),
-            }
-        )
         window_start += window_size
 
     return window_results
 
 
-def aggregate_motion(window_results: list[dict]) -> tuple[np.ndarray, np.ndarray, float, float]:
-    sweeps = np.array([row["sweep"] for row in window_results])
-    velocities = np.array([row["velocity"] for row in window_results])
+def aggregate_motion(
+    window_results: list[dict],
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    if not window_results:
+        raise ValueError("Cannot aggregate an empty list of motion windows")
+
+    sweeps = np.asarray([row["sweep"] for row in window_results], dtype=np.float64)
+    velocities = np.asarray([row["velocity"] for row in window_results], dtype=np.float64)
+
+    if sweeps.ndim != 2 or sweeps.shape[1] != 3:
+        raise ValueError("Motion-window sweep values must have shape (N, 3)")
+    if velocities.shape != sweeps.shape:
+        raise ValueError("Motion-window velocity values must match sweep shape")
+    if not np.all(np.isfinite(sweeps)) or not np.all(np.isfinite(velocities)):
+        raise ValueError("Motion-window statistics contain non-finite values")
+
     median_sweep = np.median(sweeps, axis=0)
     median_velocity = np.median(velocities, axis=0)
-    return median_sweep, median_velocity, float(np.max(median_sweep)), float(np.max(median_velocity))
+    return (
+        median_sweep,
+        median_velocity,
+        float(np.max(median_sweep)),
+        float(np.max(median_velocity)),
+    )
 
 
 @dataclass
@@ -126,10 +179,10 @@ def filter_session(
     cfg = cfg or FilterConfig()
     timestamps = np.asarray(timestamps, dtype=np.float64)
     quaternions = np.asarray(quaternions, dtype=np.float64)
-    n_raw = len(timestamps)
+    n_raw = len(timestamps) if timestamps.ndim > 0 else 0
 
     def fail(reason: str, **extra) -> FilterResult:
-        defaults = dict(
+        values = dict(
             status="FAIL",
             reject_reason=reason,
             spec_version=cfg.spec_version,
@@ -147,9 +200,15 @@ def filter_session(
             velocity_valid=False,
             interval={},
         )
-        defaults.update(extra)
-        return FilterResult(**defaults)
+        values.update(extra)
+        return FilterResult(**values)
 
+    if timestamps.ndim != 1:
+        return fail("timestamps_must_be_1d")
+    if quaternions.ndim != 2 or quaternions.shape[1] != 4:
+        return fail("quaternions_must_have_shape_N_by_4")
+    if len(timestamps) != len(quaternions):
+        return fail("timestamp_quaternion_length_mismatch")
     if n_raw == 0:
         return fail("empty_session")
     if not np.all(np.isfinite(timestamps)):
@@ -157,23 +216,56 @@ def filter_session(
     if not np.all(np.isfinite(quaternions)):
         return fail("non_finite_quaternions")
 
-    trimmed_t, trimmed_q, n_trim_removed = trim_startup(timestamps, quaternions, cfg.trim_seconds)
+    try:
+        trimmed_t, trimmed_q, n_trim_removed = trim_startup(
+            timestamps, quaternions, cfg.trim_seconds
+        )
+    except Exception as exc:
+        return fail(f"trim_error:{type(exc).__name__}:{exc}")
+
+    trimmed_t = np.asarray(trimmed_t, dtype=np.float64)
+    trimmed_q = np.asarray(trimmed_q, dtype=np.float64)
     n_after_trim = len(trimmed_t)
+
+    if trimmed_t.ndim != 1:
+        return fail("trimmed_timestamps_must_be_1d", n_trim_removed=n_trim_removed)
+    if trimmed_q.ndim != 2 or trimmed_q.shape[1] != 4:
+        return fail("trimmed_quaternions_must_have_shape_N_by_4",
+                    n_after_trim=n_after_trim, n_trim_removed=n_trim_removed)
+    if len(trimmed_t) != len(trimmed_q):
+        return fail("trimmed_array_length_mismatch",
+                    n_after_trim=n_after_trim, n_trim_removed=n_trim_removed)
     if n_after_trim < cfg.min_samples_after_trim:
         return fail(
             "too_few_samples_after_trim",
             n_after_trim=n_after_trim,
             n_trim_removed=n_trim_removed,
         )
+    if not np.all(np.isfinite(trimmed_t)) or not np.all(np.isfinite(trimmed_q)):
+        return fail(
+            "non_finite_values_after_trim",
+            n_after_trim=n_after_trim,
+            n_trim_removed=n_trim_removed,
+        )
 
-    stats = interval_stats(trimmed_t, cfg)
+    try:
+        stats = interval_stats(trimmed_t, cfg)
+        interval_data = stats_as_dict(stats)
+    except Exception as exc:
+        return fail(
+            f"timestamp_analysis_error:{type(exc).__name__}:{exc}",
+            n_after_trim=n_after_trim,
+            n_trim_removed=n_trim_removed,
+        )
+
     extra = {
-        "sampling_rate_hz": stats.sampling_rate_hz,
-        "sampling_rate_valid": stats.sampling_rate_valid,
+        "sampling_rate_hz": float(stats.sampling_rate_hz),
+        "sampling_rate_valid": bool(stats.sampling_rate_valid),
         "n_after_trim": n_after_trim,
-        "n_trim_removed": n_trim_removed,
-        "interval": stats_as_dict(stats),
+        "n_trim_removed": int(n_trim_removed),
+        "interval": interval_data,
     }
+
     if stats.n_non_monotonic:
         return fail("non_monotonic_timestamps", **extra)
     if stats.n_duplicate:
@@ -187,16 +279,40 @@ def filter_session(
         unit_q = normalize(trimmed_q)
         unit_q, _flips = hemisphere_align(unit_q)
         euler = to_euler_xyz_degrees(unit_q, cfg.euler_order)
-    except Exception:
-        return fail("quaternion_or_euler_invalid", **extra)
+    except Exception as exc:
+        return fail(
+            f"quaternion_or_euler_invalid:{type(exc).__name__}:{exc}",
+            **extra,
+        )
 
-    windows = analyze_motion_windows(trimmed_t, euler, cfg)
+    try:
+        windows = analyze_motion_windows(trimmed_t, euler, cfg)
+    except Exception as exc:
+        return fail(
+            f"motion_window_analysis_error:{type(exc).__name__}:{exc}",
+            **extra,
+        )
+
     if not windows:
         return fail("no_valid_motion_windows", **extra, n_valid_windows=0)
 
-    median_sweep, median_velocity, session_sweep, session_velocity = aggregate_motion(windows)
-    sweep_valid = _compare(session_sweep, cfg.min_sweep_degrees, cfg.sweep_comparison)
-    velocity_valid = _compare(session_velocity, cfg.min_velocity_deg_s, cfg.velocity_comparison)
+    try:
+        median_sweep, median_velocity, session_sweep, session_velocity = (
+            aggregate_motion(windows)
+        )
+    except Exception as exc:
+        return fail(
+            f"motion_aggregation_error:{type(exc).__name__}:{exc}",
+            **extra,
+            n_valid_windows=len(windows),
+        )
+
+    sweep_valid = _compare(
+        session_sweep, cfg.min_sweep_degrees, cfg.sweep_comparison
+    )
+    velocity_valid = _compare(
+        session_velocity, cfg.min_velocity_deg_s, cfg.velocity_comparison
+    )
 
     extra.update(
         n_valid_windows=len(windows),
@@ -207,21 +323,30 @@ def filter_session(
         sweep_valid=sweep_valid,
         velocity_valid=velocity_valid,
         timestamps_trim=trimmed_t,
-        quaternions_trim=unit_q.astype(np.float64),
+        quaternions_trim=unit_q.astype(np.float64, copy=False),
     )
+
     if not sweep_valid:
         return fail("sweep_below_threshold", **extra)
     if not velocity_valid:
         return fail("velocity_below_threshold", **extra)
 
-    extra["status"] = "PASS"
-    extra["reject_reason"] = ""
-    extra["spec_version"] = cfg.spec_version
-    extra["n_raw"] = n_raw
+    extra.update(
+        status="PASS",
+        reject_reason="",
+        spec_version=cfg.spec_version,
+        n_raw=n_raw,
+    )
     return FilterResult(**extra)
 
 
-def filter_row(result: FilterResult, user_id: str, session_id: str, member_name: str, archive: str) -> dict:
+def filter_row(
+    result: FilterResult,
+    user_id: str,
+    session_id: str,
+    member_name: str,
+    archive: str,
+) -> dict:
     sweep = result.sweep_xyz
     velocity = result.velocity_xyz
     return {

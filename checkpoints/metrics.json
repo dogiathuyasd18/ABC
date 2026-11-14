@@ -1,0 +1,51 @@
+{
+  "parameters": 17148,
+  "metric": "mean geodesic degrees at predicted sample 20, window-weighted, user-held-out",
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 10.085227184107945,
+      "val_geodesic_deg_step20": 8.001481290847536,
+      "val_constant_velocity_deg_step20": 10.247051586675896,
+      "val_windows": 1890
+    },
+    {
+      "epoch": 2,
+      "train_loss": 8.36366351145198,
+      "val_geodesic_deg_step20": 7.461908856144658,
+      "val_constant_velocity_deg_step20": 10.247051586675896,
+      "val_windows": 1890
+    },
+    {
+      "epoch": 3,
+      "train_loss": 7.661038032665753,
+      "val_geodesic_deg_step20": 7.42445474856745,
+      "val_constant_velocity_deg_step20": 10.247051586675896,
+      "val_windows": 1890
+    }
+  ],
+  "val_users": [
+    "00f13eb1-6bc7-4e38-8525-5b412af4b9b7",
+    "00f4ddc2-a595-47a4-8883-16284807a850",
+    "00f73e02-eb53-4387-bd0f-5c701474261f",
+    "00fa7124-4838-4275-a473-1424cb52f42f"
+  ],
+  "train_users": [
+    "00743d56-a912-4ec7-a9d4-3e6e22756488",
+    "007a16e6-6862-40f1-b7ee-07c959e4ac92",
+    "007d3ac4-8443-4430-94e2-25b9474e2ce6",
+    "007e46f7-4f73-4dfa-8e4f-8258563abd57",
+    "00803645-7423-4083-9637-627a4c32759f",
+    "0081a211-d913-4ee8-b71a-9fd1ed7d3e2d",
+    "008a4099-eadc-4013-b4d6-69ea848c6949",
+    "008c5ce1-7db3-416f-ab82-21b22c6266ee",
+    "00926ea3-8296-4f72-959d-a9b289bb541e",
+    "00a82f96-9871-4d8d-a1c7-c739e34f928f",
+    "00a85435-a5d4-4ce3-b452-3d99b6f8b399",
+    "00c6dd85-707d-4e77-9bac-fcd00cd58cd8",
+    "00d2ae65-e526-422e-8418-a0505a16187c",
+    "00dbd9ee-71c8-4bad-ad21-8eee56a4c200",
+    "00e5a085-dbaf-46c4-abbc-b45edde3d662",
+    "00e95b89-2b88-4c29-974d-cf9e1934ec5b"
+  ]
+}

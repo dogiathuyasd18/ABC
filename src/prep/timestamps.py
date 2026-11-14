@@ -1,9 +1,4 @@
-"""Timestamp inspection and deterministic cleaning.
-
-Never sort to hide order errors. Never extrapolate. Exact duplicate rows may
-be dropped; the same timestamp with two different quaternions rejects the
-session.
-"""
+"""Timestamp inspection and deterministic cleaning."""
 
 from __future__ import annotations
 
@@ -42,6 +37,24 @@ class TimestampCleanResult:
     reject_reason: str = ""
 
 
+def _as_timestamp_array(timestamps: np.ndarray) -> np.ndarray:
+    values = np.asarray(timestamps, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError(f"timestamps must be 1D, got shape {values.shape}")
+    return values
+
+
+def _as_quaternion_array(quaternions: np.ndarray, expected_length: int | None = None) -> np.ndarray:
+    values = np.asarray(quaternions, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 4:
+        raise ValueError(f"quaternions must have shape (N, 4), got {values.shape}")
+    if expected_length is not None and len(values) != expected_length:
+        raise ValueError(
+            f"timestamp/quaternion length mismatch: {expected_length} != {len(values)}"
+        )
+    return values
+
+
 def infer_time_unit(median_interval: float) -> str:
     if not np.isfinite(median_interval) or median_interval <= 0:
         return "unknown"
@@ -49,16 +62,25 @@ def infer_time_unit(median_interval: float) -> str:
         return "seconds"
     if 5.0 <= median_interval <= 20.0:
         return "milliseconds_suspect"
+    if 5_000.0 <= median_interval <= 20_000.0:
+        return "microseconds_suspect"
+    if 5_000_000.0 <= median_interval <= 20_000_000.0:
+        return "nanoseconds_suspect"
     return "unexpected"
 
 
-def interval_stats(timestamps: np.ndarray, cfg: FilterConfig | None = None, clean: CleanConfig | None = None) -> IntervalStats:
+def interval_stats(
+    timestamps: np.ndarray,
+    cfg: FilterConfig | None = None,
+    clean: CleanConfig | None = None,
+) -> IntervalStats:
     cfg = cfg or FilterConfig()
     clean = clean or CleanConfig()
-    timestamps = np.asarray(timestamps, dtype=np.float64)
-    if len(timestamps) < 2:
+    timestamps = _as_timestamp_array(timestamps)
+
+    if len(timestamps) < 2 or not np.all(np.isfinite(timestamps)):
         return IntervalStats(
-            n_intervals=0,
+            n_intervals=max(0, len(timestamps) - 1),
             median=float("nan"),
             mean=float("nan"),
             std=float("nan"),
@@ -89,10 +111,13 @@ def interval_stats(timestamps: np.ndarray, cfg: FilterConfig | None = None, clea
         p95 = float(np.percentile(positive, 95))
         maximum = float(np.max(positive))
         rate = 1.0 / median
-        valid = cfg.min_sampling_rate_hz <= rate <= cfg.max_sampling_rate_hz
+        valid = (
+            n_non_monotonic == 0
+            and cfg.min_sampling_rate_hz <= rate <= cfg.max_sampling_rate_hz
+        )
 
     return IntervalStats(
-        n_intervals=int(len(diffs)),
+        n_intervals=len(diffs),
         median=median,
         mean=mean,
         std=std,
@@ -103,18 +128,26 @@ def interval_stats(timestamps: np.ndarray, cfg: FilterConfig | None = None, clea
         n_dropout=n_dropout,
         sampling_rate_hz=float(rate),
         sampling_rate_valid=bool(valid),
-        suspected_units=infer_time_unit(median if np.isfinite(median) else float("nan")),
+        suspected_units=infer_time_unit(median),
     )
 
 
-def trim_startup(timestamps: np.ndarray, quaternions: np.ndarray, trim_seconds: float) -> tuple[np.ndarray, np.ndarray, int]:
-    timestamps = np.asarray(timestamps, dtype=np.float64)
-    quaternions = np.asarray(quaternions, dtype=np.float64)
-    if len(timestamps) == 0:
-        return timestamps, quaternions, 0
+def trim_startup(
+    timestamps: np.ndarray,
+    quaternions: np.ndarray,
+    trim_seconds: float,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    timestamps = _as_timestamp_array(timestamps)
+    quaternions = _as_quaternion_array(quaternions, len(timestamps))
+    if not np.isfinite(trim_seconds) or trim_seconds < 0:
+        raise ValueError("trim_seconds must be finite and non-negative")
+    if not np.all(np.isfinite(timestamps)):
+        raise ValueError("timestamps contain non-finite values")
+    if len(timestamps) == 0 or trim_seconds == 0:
+        return timestamps.copy(), quaternions.copy(), 0
     cutoff = timestamps[0] + trim_seconds
     keep = timestamps >= cutoff
-    removed = int((~keep).sum())
+    removed = int(np.count_nonzero(~keep))
     return timestamps[keep], quaternions[keep], removed
 
 
@@ -123,11 +156,11 @@ def clean_timestamps(
     quaternions: np.ndarray,
     clean: CleanConfig | None = None,
 ) -> TimestampCleanResult:
-    """Apply documented duplicate rules. Do not sort. Do not invent times."""
+    """Drop non-finite timestamp rows and exact duplicate samples; never sort."""
     clean = clean or CleanConfig()
     timestamps = np.asarray(timestamps, dtype=np.float64)
     quaternions = np.asarray(quaternions, dtype=np.float64)
-    n_input = len(timestamps)
+    n_input = len(timestamps) if timestamps.ndim >= 1 else 0
     removed = {"non_finite_time": 0, "exact_duplicate": 0}
 
     if timestamps.ndim != 1:
@@ -140,6 +173,16 @@ def clean_timestamps(
             rejected=True,
             reject_reason="timestamps_not_1d",
         )
+    if quaternions.ndim != 2 or quaternions.shape[1] != 4:
+        return TimestampCleanResult(
+            timestamps=timestamps,
+            quaternions=quaternions,
+            n_input=n_input,
+            n_kept=n_input,
+            n_removed=0,
+            rejected=True,
+            reject_reason="quaternions_not_n_by_4",
+        )
     if len(timestamps) != len(quaternions):
         return TimestampCleanResult(
             timestamps=timestamps,
@@ -151,10 +194,10 @@ def clean_timestamps(
             reject_reason="timestamp_quaternion_length_mismatch",
         )
 
-    finite = np.isfinite(timestamps)
-    removed["non_finite_time"] = int((~finite).sum())
-    timestamps = timestamps[finite]
-    quaternions = quaternions[finite]
+    finite_time = np.isfinite(timestamps)
+    removed["non_finite_time"] = int(np.count_nonzero(~finite_time))
+    timestamps = timestamps[finite_time]
+    quaternions = quaternions[finite_time]
 
     if len(timestamps) < 2:
         return TimestampCleanResult(
@@ -181,19 +224,26 @@ def clean_timestamps(
             reject_reason="non_monotonic_timestamps",
         )
 
-    keep = np.ones(len(timestamps), dtype=bool)
-    for index in range(1, len(timestamps)):
-        if timestamps[index] - timestamps[index - 1] > clean.timestamp_eps:
+    kept_indices: list[int] = []
+    for index in range(len(timestamps)):
+        if not kept_indices:
+            kept_indices.append(index)
             continue
+
+        previous = kept_indices[-1]
+        delta = timestamps[index] - timestamps[previous]
+        if delta > clean.timestamp_eps:
+            kept_indices.append(index)
+            continue
+
         same_quat = np.allclose(
             quaternions[index],
-            quaternions[index - 1],
+            quaternions[previous],
+            rtol=0.0,
             atol=clean.duplicate_quat_atol,
+            equal_nan=False,
         )
-        if same_quat:
-            keep[index] = False
-            removed["exact_duplicate"] += 1
-        else:
+        if not same_quat:
             return TimestampCleanResult(
                 timestamps=timestamps,
                 quaternions=quaternions,
@@ -204,11 +254,13 @@ def clean_timestamps(
                 rejected=True,
                 reject_reason="duplicate_timestamp_conflicting_quaternion",
             )
+        removed["exact_duplicate"] += 1
 
+    keep = np.asarray(kept_indices, dtype=np.int64)
     timestamps = timestamps[keep]
     quaternions = quaternions[keep]
-    units = infer_time_unit(float(np.median(np.diff(timestamps))) if len(timestamps) > 1 else float("nan"))
-    if units == "milliseconds_suspect":
+
+    if len(timestamps) < 2:
         return TimestampCleanResult(
             timestamps=timestamps,
             quaternions=quaternions,
@@ -217,7 +269,21 @@ def clean_timestamps(
             n_removed=n_input - len(timestamps),
             removed_by_reason=removed,
             rejected=True,
-            reject_reason="timestamp_units_not_seconds",
+            reject_reason="too_few_samples_after_duplicate_removal",
+        )
+
+    median_interval = float(np.median(np.diff(timestamps)))
+    units = infer_time_unit(median_interval)
+    if units != "seconds":
+        return TimestampCleanResult(
+            timestamps=timestamps,
+            quaternions=quaternions,
+            n_input=n_input,
+            n_kept=len(timestamps),
+            n_removed=n_input - len(timestamps),
+            removed_by_reason=removed,
+            rejected=True,
+            reject_reason=f"timestamp_units_{units}",
         )
 
     return TimestampCleanResult(

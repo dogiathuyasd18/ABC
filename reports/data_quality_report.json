@@ -1,0 +1,141 @@
+{
+  "created_utc": "2026-11-07T20:27:36.122017+00:00",
+  "schema_version": "2.0",
+  "preprocessing_version": "2.0",
+  "spec_version": "9th-abc-challenge-data-page",
+  "seed": 0,
+  "manifest": {
+    "schema_version": "2.0",
+    "preprocessing_version": "2.0",
+    "spec_version": "9th-abc-challenge-data-page",
+    "quaternion_order": "x,y,z,w",
+    "filter": {
+      "spec_version": "9th-abc-challenge-data-page",
+      "trim_seconds": 5.0,
+      "motion_window_seconds": 5.0,
+      "min_samples_after_trim": 20,
+      "min_valid_samples_per_window": 10,
+      "min_sampling_rate_hz": 85.0,
+      "max_sampling_rate_hz": 110.0,
+      "min_sweep_degrees": 17.0,
+      "min_velocity_deg_s": 15.0,
+      "sweep_comparison": "greater_than",
+      "velocity_comparison": "greater_than",
+      "euler_order": "xyz",
+      "quaternion_axes_xror": [
+        "i",
+        "j",
+        "k",
+        "1"
+      ]
+    },
+    "clean": {
+      "preprocessing_version": "2.0",
+      "near_zero_norm": 1e-08,
+      "unit_norm_atol": 1e-05,
+      "duplicate_quat_atol": 1e-06,
+      "timestamp_eps": 1e-09,
+      "dropout_interval_seconds": 0.023529411764705882,
+      "discontinuity_degrees": 30.0,
+      "max_interpolate_gap_seconds": 0.04,
+      "gap_threshold_rationale": "Challenge: SLERP short dropouts; split longer ones; do not invent half a second of motion. Native band 85\u2013110 Hz \u21d2 tick 9.1\u201311.8 ms. 0.04 s \u2264 three missed ticks at 85 Hz. Gaps above this start a new segment.",
+      "target_sample_rate_hz": 100.0,
+      "do_not_sort_timestamps": true,
+      "do_not_extrapolate": true,
+      "do_not_delete_fast_motion": true
+    },
+    "window": {
+      "context_samples": 400,
+      "horizon_samples": 20,
+      "stride": 20
+    }
+  },
+  "session_filtering": {
+    "n_users_inspected": 473,
+    "n_sessions_inspected": 3055,
+    "n_pass": 3055,
+    "n_fail": 0,
+    "reject_reasons": {
+      "PASS": 3055
+    },
+    "distributions": {
+      "sampling_rate_hz": {
+        "n": 3055,
+        "min": 85.05645684620376,
+        "median": 89.89849108367626,
+        "mean": 89.92128781699995,
+        "p95": 91.02222222222223,
+        "max": 106.3896103896104
+      },
+      "frames_after_trim": {
+        "n": 3055,
+        "min": 285.0,
+        "median": 15021.0,
+        "mean": 13921.363338788871,
+        "p95": 23521.09999999999,
+        "max": 48624.0
+      },
+      "session_sweep": {
+        "n": 3055,
+        "min": 17.001537632457346,
+        "median": 20.53472597289158,
+        "mean": 25.08762324559306,
+        "p95": 36.154427362334275,
+        "max": 358.45647103670484
+      },
+      "session_velocity": {
+        "n": 3055,
+        "min": 15.012258043012343,
+        "median": 25.78004172607961,
+        "mean": 27.841646428745467,
+        "p95": 44.49504561779889,
+        "max": 242.5252298586244
+      }
+    }
+  },
+  "training_usability": {
+    "n_users": 20,
+    "n_sessions": 193,
+    "n_segments": 329,
+    "n_resampled_samples": 2835029,
+    "n_interpolated_samples": 2833304,
+    "n_sessions_with_window": 192,
+    "n_sessions_without_window": 1,
+    "n_usable_windows": 136263,
+    "windows_per_user": {
+      "00743d56-a912-4ec7-a9d4-3e6e22756488": 774,
+      "007a16e6-6862-40f1-b7ee-07c959e4ac92": 1063,
+      "007d3ac4-8443-4430-94e2-25b9474e2ce6": 26012,
+      "007e46f7-4f73-4dfa-8e4f-8258563abd57": 1882,
+      "00803645-7423-4083-9637-627a4c32759f": 996,
+      "0081a211-d913-4ee8-b71a-9fd1ed7d3e2d": 9592,
+      "008a4099-eadc-4013-b4d6-69ea848c6949": 51048,
+      "008c5ce1-7db3-416f-ab82-21b22c6266ee": 10741,
+      "00926ea3-8296-4f72-959d-a9b289bb541e": 797,
+      "00a82f96-9871-4d8d-a1c7-c739e34f928f": 1530,
+      "00a85435-a5d4-4ce3-b452-3d99b6f8b399": 979,
+      "00c6dd85-707d-4e77-9bac-fcd00cd58cd8": 24437,
+      "00d2ae65-e526-422e-8418-a0505a16187c": 867,
+      "00dbd9ee-71c8-4bad-ad21-8eee56a4c200": 1182,
+      "00e5a085-dbaf-46c4-abbc-b45edde3d662": 726,
+      "00e95b89-2b88-4c29-974d-cf9e1934ec5b": 118,
+      "00f13eb1-6bc7-4e38-8525-5b412af4b9b7": 1578,
+      "00f4ddc2-a595-47a4-8883-16284807a850": 655,
+      "00f73e02-eb53-4387-bd0f-5c701474261f": 72,
+      "00fa7124-4838-4275-a473-1424cb52f42f": 1214
+    },
+    "window_config": {
+      "context": 400,
+      "horizon": 20,
+      "stride": 20
+    }
+  },
+  "inter_sample_gaps_resampled": {
+    "n": 2834700,
+    "min": 0.007895507817465841,
+    "median": 0.00999999999999801,
+    "mean": 0.009999985037981274,
+    "p95": 0.010000000000019327,
+    "max": 0.010000000000047748
+  }
+}

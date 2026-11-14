@@ -1,8 +1,5 @@
-"""Gap analysis and segmentation.
 
-Gaps longer than CleanConfig.max_interpolate_gap_seconds start a new
-continuous segment. Training windows must not cross those cuts.
-"""
+"""Gap analysis and segmentation for continuous time-series samples."""
 
 from __future__ import annotations
 
@@ -26,26 +23,114 @@ class GapReport:
     rationale: str
 
 
-def gap_report(timestamps: np.ndarray, cfg: CleanConfig | None = None) -> GapReport:
+def _validate_timestamps(timestamps: np.ndarray) -> np.ndarray:
+    values = np.asarray(timestamps, dtype=np.float64)
+
+    if values.ndim != 1:
+        raise ValueError(
+            f"timestamps must be 1D, got shape {values.shape}"
+        )
+
+    if not np.all(np.isfinite(values)):
+        raise ValueError("timestamps contain non-finite values")
+
+    if len(values) >= 2 and np.any(np.diff(values) <= 0):
+        raise ValueError(
+            "timestamps must be strictly increasing before gap analysis"
+        )
+
+    return values
+
+
+def _validate_quaternions(
+    quaternions: np.ndarray,
+    expected_length: int,
+) -> np.ndarray:
+    values = np.asarray(quaternions, dtype=np.float64)
+
+    if values.ndim != 2 or values.shape[1] != 4:
+        raise ValueError(
+            f"quaternions must have shape (N, 4), got {values.shape}"
+        )
+
+    if len(values) != expected_length:
+        raise ValueError("timestamp_quaternion_length_mismatch")
+
+    if not np.all(np.isfinite(values)):
+        raise ValueError("quaternions contain non-finite values")
+
+    return values
+
+
+def _validate_thresholds(
+    cfg: CleanConfig,
+) -> tuple[float, float]:
+    split_threshold = float(cfg.max_interpolate_gap_seconds)
+    dropout_threshold = float(cfg.dropout_interval_seconds)
+
+    if not np.isfinite(split_threshold) or split_threshold <= 0:
+        raise ValueError(
+            "max_interpolate_gap_seconds must be finite and positive"
+        )
+
+    if not np.isfinite(dropout_threshold) or dropout_threshold < 0:
+        raise ValueError(
+            "dropout_interval_seconds must be finite and non-negative"
+        )
+
+    if dropout_threshold > split_threshold:
+        raise ValueError(
+            "dropout_interval_seconds cannot exceed "
+            "max_interpolate_gap_seconds"
+        )
+
+    return split_threshold, dropout_threshold
+
+
+def gap_report(
+    timestamps: np.ndarray,
+    cfg: CleanConfig | None = None,
+) -> GapReport:
     cfg = cfg or CleanConfig()
-    timestamps = np.asarray(timestamps, dtype=np.float64)
+
+    timestamps = _validate_timestamps(timestamps)
+    split_threshold, dropout_threshold = _validate_thresholds(cfg)
+
     if len(timestamps) < 2:
-        return GapReport(0, 0, 0, float("nan"), float("nan"), float("nan"), float("nan"), cfg.max_interpolate_gap_seconds, cfg.gap_threshold_rationale)
-    diffs = np.diff(timestamps)
-    positive = diffs[diffs > 0]
-    if len(positive) == 0:
-        return GapReport(0, 0, 0, float("nan"), float("nan"), float("nan"), float("nan"), cfg.max_interpolate_gap_seconds, cfg.gap_threshold_rationale)
-    n_split = int(np.sum(positive > cfg.max_interpolate_gap_seconds))
-    n_short = int(np.sum((positive > cfg.dropout_interval_seconds) & (positive <= cfg.max_interpolate_gap_seconds)))
+        return GapReport(
+            n_gaps=0,
+            n_split=0,
+            n_short=0,
+            median_gap=float("nan"),
+            p95_gap=float("nan"),
+            p99_gap=float("nan"),
+            max_gap=float("nan"),
+            threshold_seconds=split_threshold,
+            rationale=cfg.gap_threshold_rationale,
+        )
+
+    intervals = np.diff(timestamps)
+
+    n_split = int(
+        np.count_nonzero(intervals > split_threshold)
+    )
+
+    n_short = int(
+        np.count_nonzero(
+            (intervals > dropout_threshold)
+            & (intervals <= split_threshold)
+        )
+    )
+
     return GapReport(
-        n_gaps=int(len(positive)),
+        n_gaps=len(intervals),
         n_split=n_split,
         n_short=n_short,
-        median_gap=float(np.median(positive)),
-        p95_gap=float(np.percentile(positive, 95)),
-        p99_gap=float(np.percentile(positive, 99)),
-        max_gap=float(np.max(positive)),
-        threshold_seconds=cfg.max_interpolate_gap_seconds,
+        median_gap=float(np.median(intervals)),
+        p95_gap=float(np.percentile(intervals, 95)),
+        p99_gap=float(np.percentile(intervals, 99)),
+        max_gap=float(np.max(intervals)),
+        threshold_seconds=split_threshold,
         rationale=cfg.gap_threshold_rationale,
     )
 
@@ -56,20 +141,37 @@ def split_on_gaps(
     cfg: CleanConfig | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     cfg = cfg or CleanConfig()
-    timestamps = np.asarray(timestamps, dtype=np.float64)
-    quaternions = np.asarray(quaternions, dtype=np.float64)
+
+    timestamps = _validate_timestamps(timestamps)
+    quaternions = _validate_quaternions(
+        quaternions,
+        len(timestamps),
+    )
+
+    split_threshold, _ = _validate_thresholds(cfg)
+
     if len(timestamps) == 0:
         return []
-    if len(timestamps) == 1:
-        return [(timestamps, quaternions)]
 
-    cuts = np.where(np.diff(timestamps) > cfg.max_interpolate_gap_seconds)[0] + 1
-    segments = []
-    for indices in np.split(np.arange(len(timestamps)), cuts):
-        if len(indices) == 0:
-            continue
-        segments.append((timestamps[indices], quaternions[indices]))
-    return segments
+    cuts = (
+        np.flatnonzero(
+            np.diff(timestamps) > split_threshold
+        ) + 1
+    )
+
+    index_segments = np.split(
+        np.arange(len(timestamps)),
+        cuts,
+    )
+
+    return [
+        (
+            timestamps[index].copy(),
+            quaternions[index].copy(),
+        )
+        for index in index_segments
+        if len(index) > 0
+    ]
 
 
 def report_as_dict(report: GapReport) -> dict:

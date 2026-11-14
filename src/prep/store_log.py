@@ -1,36 +1,91 @@
-"""Append-only CSV logs with a stable header."""
-
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
+from typing import Iterable
 
 
-def load_keys(path: Path, fields=("user_id", "session_id")) -> set[tuple]:
-    keys = set()
+def load_keys(
+    path: Path,
+    fields: Iterable[str] = ("user_id", "session_id"),
+) -> set[tuple[str, ...]]:
+    keys: set[tuple[str, ...]] = set()
+
     if not path.exists() or path.stat().st_size == 0:
         return keys
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            keys.add(tuple(row.get(field, "") for field in fields))
+
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+
+        for row in reader:
+            keys.add(tuple(row.get(field, "") or "" for field in fields))
+
     return keys
 
 
 def append_row(path: Path, row: dict) -> None:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(row.keys())
-    write_header = not path.exists() or path.stat().st_size == 0
-    if not write_header:
-        with path.open("r", newline="", encoding="utf-8") as handle:
-            existing = csv.DictReader(handle)
-            if existing.fieldnames:
-                fieldnames = list(existing.fieldnames)
-                for key in row:
-                    if key not in fieldnames:
-                        fieldnames.append(key)
-    with path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-        if write_header:
+
+    row = dict(row)
+    row_fields = list(row.keys())
+
+    if not path.exists() or path.stat().st_size == 0:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=row_fields,
+                extrasaction="ignore",
+            )
             writer.writeheader()
-        writer.writerow({key: row.get(key, "") for key in fieldnames})
-        handle.flush()
+            writer.writerow(row)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return
+
+    with path.open("r", newline="", encoding="utf-8-sig") as source:
+        reader = csv.DictReader(source)
+        old_fields = list(reader.fieldnames or [])
+
+        if not old_fields:
+            raise ValueError(f"CSV has no header: {path}")
+
+        new_fields = [field for field in row_fields if field not in old_fields]
+
+        if not new_fields:
+            with path.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=old_fields,
+                    extrasaction="ignore",
+                )
+                writer.writerow(row)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return
+
+        fieldnames = old_fields + new_fields
+        temp_path = path.with_name(f"{path.name}.tmp")
+
+        try:
+            with temp_path.open("w", newline="", encoding="utf-8") as target:
+                writer = csv.DictWriter(
+                    target,
+                    fieldnames=fieldnames,
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+
+                for old_row in reader:
+                    writer.writerow(old_row)
+
+                writer.writerow(row)
+                target.flush()
+                os.fsync(target.fileno())
+
+            os.replace(temp_path, path)
+
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()

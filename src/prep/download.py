@@ -285,14 +285,14 @@ def process_local_archive(
     h5_path: Path,
     session_log: Path,
     reject_log: Path,
-    target_members: set[str],
+    target_members: set[str] | None = None,
     delete_tar: bool = True,
 ) -> dict:
     from src.prep.filtering import filter_row
 
     summary = {
         "archive": str(archive),
-        "target": len(target_members),
+        "target": 0,
         "saved": 0,
         "failed": 0,
         "skipped": 0,
@@ -302,8 +302,20 @@ def process_local_archive(
 
     try:
         archive_members = set(list_xror_members(archive))
-    except Exception as error:
+    except Exception:
         LOGGER.exception("Cannot list archive %s", archive)
+        summary["errors"] += 1
+        return summary
+
+    if target_members is None:
+        target_members = archive_members
+    else:
+        target_members = set(target_members)
+
+    summary["target"] = len(target_members)
+
+    if not target_members:
+        LOGGER.error("No target XROR members found in archive %s", archive)
         summary["errors"] += 1
         return summary
 

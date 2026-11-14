@@ -21,7 +21,8 @@ def test_filter_ignores_420_sample_rule():
     quats = yaw_quaternions(times, 25.0)
     result = filter_session(times, quats)
     assert result.passed
-    assert result.n_after_trim < WINDOW_SAMPLES or True
+    assert result.n_after_trim < 2 * WINDOW_SAMPLES
+    assert result.n_after_trim >= 20
     assert result.n_after_trim >= 20
     assert "420" not in result.reject_reason
 
@@ -69,8 +70,12 @@ def test_stationary_session_fails_motion_thresholds():
     assert result.reject_reason in {"sweep_below_threshold", "velocity_below_threshold"}
 
 
-def test_comparison_mode_is_greater_than():
+def test_comparison_mode_matches_challenge_thresholds():
     cfg = FilterConfig()
-    assert cfg.sweep_comparison == "greater_than"
+
+    assert cfg.sweep_comparison == "greater_or_equal"
+    assert cfg.velocity_comparison == "greater_or_equal"
     assert cfg.min_sweep_degrees == 17.0
     assert cfg.min_velocity_deg_s == 15.0
+
+    

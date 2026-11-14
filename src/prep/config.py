@@ -6,12 +6,13 @@ PREPROCESSING_VERSION if a rule must change, and write a new HDF5 file.
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import math
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 SCHEMA_VERSION = "2.0"
-PREPROCESSING_VERSION = "2.0"
+PREPROCESSING_VERSION = "2.1"
 SPEC_VERSION = "9th-abc-challenge-data-page"
 QUATERNION_ORDER_STORED = "x,y,z,w"
 QUATERNION_AXES_XROR = ("i", "j", "k", "1")
@@ -20,7 +21,6 @@ EULER_ORDER = "xyz"
 TARGET_SAMPLE_RATE_HZ = 100.0
 TARGET_SAMPLE_INTERVAL = 1.0 / TARGET_SAMPLE_RATE_HZ
 
-# Session filtering — official 9th ABC Challenge data page. Not training rules.
 TRIM_SECONDS = 5.0
 MOTION_WINDOW_SECONDS = 5.0
 MIN_SAMPLES_AFTER_TRIM = 20
@@ -29,10 +29,9 @@ MIN_SAMPLING_RATE_HZ = 85.0
 MAX_SAMPLING_RATE_HZ = 110.0
 MIN_SWEEP_DEGREES = 17.0
 MIN_VELOCITY_DEGREES_PER_SEC = 15.0
-SWEEP_COMPARISON = "greater_than"
-VELOCITY_COMPARISON = "greater_than"
+SWEEP_COMPARISON = "greater_or_equal"
+VELOCITY_COMPARISON = "greater_or_equal"
 
-# Training usability — evaluated only after clean + segment + 100 Hz resample.
 CONTEXT_SAMPLES = 400
 HORIZON_SAMPLES = 20
 WINDOW_SAMPLES = CONTEXT_SAMPLES + HORIZON_SAMPLES
@@ -43,15 +42,8 @@ UNIT_NORM_ATOL = 1e-5
 DUPLICATE_QUAT_ATOL = 1e-6
 TIMESTAMP_EPS = 1e-9
 
-# Intervals longer than this are counted as dropouts in reports, not as ticks.
-DROPOUT_INTERVAL_SECONDS = 2.0 / MIN_SAMPLING_RATE_HZ  # ~23.5 ms at 85 Hz
-
-# Large geodesic step between native samples is flagged, never auto-deleted.
+DROPOUT_INTERVAL_SECONDS = 2.0 / MIN_SAMPLING_RATE_HZ
 DISCONTINUITY_DEGREES = 30.0
-
-# SLERP fills only short missing ticks. 0.5 s is the challenge's example of
-# a gap that must NOT be interpolated. 40 ms covers three missed ticks at
-# 85 Hz (slowest accepted native rate) and four ticks at 100 Hz.
 MAX_INTERPOLATE_GAP_SECONDS = 0.04
 GAP_THRESHOLD_RATIONALE = (
     "Challenge: SLERP short dropouts; split longer ones; "
@@ -77,6 +69,31 @@ class FilterConfig:
     euler_order: str = EULER_ORDER
     quaternion_axes_xror: tuple = QUATERNION_AXES_XROR
 
+    def __post_init__(self):
+        positive = {
+            "motion_window_seconds": self.motion_window_seconds,
+            "min_samples_after_trim": self.min_samples_after_trim,
+            "min_valid_samples_per_window": self.min_valid_samples_per_window,
+            "min_sampling_rate_hz": self.min_sampling_rate_hz,
+            "max_sampling_rate_hz": self.max_sampling_rate_hz,
+        }
+        if not math.isfinite(float(self.trim_seconds)) or self.trim_seconds < 0:
+            raise ValueError("trim_seconds must be finite and non-negative")
+        for name, value in positive.items():
+            if not math.isfinite(float(value)) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.min_sampling_rate_hz >= self.max_sampling_rate_hz:
+            raise ValueError("min_sampling_rate_hz must be below max_sampling_rate_hz")
+        motion_thresholds = (self.min_sweep_degrees, self.min_velocity_deg_s)
+        if any(not math.isfinite(float(v)) or v < 0 for v in motion_thresholds):
+            raise ValueError("Motion thresholds must be finite and non-negative")
+        if self.sweep_comparison not in {"greater_than", "greater_or_equal"}:
+            raise ValueError("Invalid sweep_comparison")
+        if self.velocity_comparison not in {"greater_than", "greater_or_equal"}:
+            raise ValueError("Invalid velocity_comparison")
+        if self.euler_order not in {"xyz", "xzy", "yxz", "yzx", "zxy", "zyx"}:
+            raise ValueError("euler_order must be a valid three-axis Tait-Bryan order")
+
 
 @dataclass(frozen=True)
 class CleanConfig:
@@ -94,12 +111,30 @@ class CleanConfig:
     do_not_extrapolate: bool = True
     do_not_delete_fast_motion: bool = True
 
+    def __post_init__(self):
+        positive = (
+            self.near_zero_norm,
+            self.unit_norm_atol,
+            self.duplicate_quat_atol,
+            self.timestamp_eps,
+            self.dropout_interval_seconds,
+            self.discontinuity_degrees,
+            self.max_interpolate_gap_seconds,
+            self.target_sample_rate_hz,
+        )
+        if any(not math.isfinite(float(v)) or v <= 0 for v in positive):
+            raise ValueError("CleanConfig numeric thresholds must be finite and positive")
+
 
 @dataclass(frozen=True)
 class WindowConfig:
     context_samples: int = CONTEXT_SAMPLES
     horizon_samples: int = HORIZON_SAMPLES
     stride: int = DEFAULT_WINDOW_STRIDE
+
+    def __post_init__(self):
+        if self.context_samples <= 0 or self.horizon_samples <= 0 or self.stride <= 0:
+            raise ValueError("Window sizes and stride must be positive")
 
     @property
     def window_samples(self) -> int:
@@ -143,6 +178,12 @@ class DownloadConfig:
     max_retries: int = 3
     retry_sleep_seconds: float = 2.0
     min_free_gb: float = 10.0
+
+    def __post_init__(self):
+        if self.batch_size <= 0 or self.max_retries < 0:
+            raise ValueError("batch_size must be positive and max_retries non-negative")
+        if self.retry_sleep_seconds < 0 or self.min_free_gb < 0:
+            raise ValueError("Download limits must be non-negative")
 
 
 def config_manifest(filter_cfg=None, clean_cfg=None, window_cfg=None) -> dict:

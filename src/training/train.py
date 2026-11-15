@@ -1,6 +1,3 @@
-
-"""Train head-pose forecasting models. Validation only; test is never used here."""
-
 from __future__ import annotations
 
 import argparse
@@ -16,26 +13,25 @@ from src.data.dataset import (
     CONTEXT_LENGTH,
     HORIZON,
     HeadPoseWindowDataset,
+    SAMPLE_RATE_HZ,
     context_targets,
     list_users,
-    SAMPLE_RATE_HZ,
 )
 from src.data.splits import split_users
-
 from src.evaluation.baseline import (
     constant_velocity_quaternions,
     last_pose_quaternions,
 )
 from src.evaluation.metrics import window_weighted_step20
-
 from src.models.gru import HeadPoseGRU
+from src.models.jepa import HeadPoseJEPA
 from src.models.kinematics import KinematicsGRU
 from src.models.kinematics_tcn import KinematicsTCN
 from src.models.msrtn import MultiScaleResidualTemporalNetwork
 from src.models.predict import decode_model
-
+from src.models.res_mlp import ResidualMLP
+from src.models.tcn import TemporalCNN
 from src.prep.config import PROJECT_ROOT
-
 from src.runtime import (
     experiment_dir,
     experiment_manifest,
@@ -43,11 +39,13 @@ from src.runtime import (
     seed_everything,
     write_json,
 )
+from src.training.loss import (
+    acceleration_deviation_geodesic_loss,
+    acceleration_weighted_geodesic_loss,
+    geodesic_loss,
+)
 
-from src.training.loss import geodesic_loss
-
-
-DEFAULT_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose_v2.h5"
+DEFAULT_H5 = PROJECT_ROOT / "data" / "processed" / "head_pose_full_v3.h5"
 
 
 def resolve_h5(path: Path) -> Path:
@@ -59,13 +57,21 @@ def resolve_h5(path: Path) -> Path:
     return path
 
 
+def compute_historical_acceleration(deltas: torch.Tensor, sample_rate_hz: float) -> torch.Tensor:
+    omega = deltas * sample_rate_hz
+    alpha = torch.diff(omega, dim=1) * sample_rate_hz
+    alpha_mag = torch.linalg.norm(alpha, dim=-1)
+    rms_accel = torch.sqrt(torch.mean(alpha_mag ** 2, dim=1) + 1e-12)
+    return rms_accel
+
+
 def validate_args(args):
     args.d_model = getattr(args, "d_model", 64)
     args.blocks = getattr(args, "blocks", 3)
     args.dropout = getattr(args, "dropout", 0.1)
 
-    if args.context < 2:
-        raise ValueError("--context must be at least 2")
+    if args.context < 3:
+        raise ValueError("--context must be at least 3 to compute angular acceleration")
 
     if args.horizon < 1:
         raise ValueError("--horizon must be positive")
@@ -90,10 +96,22 @@ def validate_args(args):
         "msrtn",
         "kinematics",
         "kinematics_tcn",
+        "tcn",
+        "res_mlp",
+        "jepa",
     )
 
     if args.model not in supported_models:
         raise ValueError(f"Unsupported model: {args.model}")
+
+    if args.loss_type not in ("geodesic", "accel_weighted", "accel_dev"):
+        raise ValueError(f"Unsupported loss_type: {args.loss_type}")
+
+    if args.accel_lambda < 0 or args.max_weight < 1.0:
+        raise ValueError("--accel-lambda must be >= 0 and --max-weight must be >= 1.0")
+
+    if args.step20_weight < 0 or args.dev_weight < 0 or args.kin_accel_weight < 0:
+        raise ValueError("Loss weights must be non-negative")
 
     if args.batch_size < 1 or args.epochs < 1:
         raise ValueError("--batch-size and --epochs must be positive")
@@ -111,9 +129,7 @@ def validate_args(args):
         raise ValueError("--test-fraction must be between 0 and 1")
 
     if args.val_fraction + args.test_fraction >= 1:
-        raise ValueError(
-            "Validation and test fractions must sum to less than 1"
-        )
+        raise ValueError("Validation and test fractions must sum to less than 1")
 
     if args.max_steps < 0:
         raise ValueError("--max-steps cannot be negative")
@@ -158,6 +174,34 @@ def build_model(args):
             kernel_size=3,
         )
 
+    if args.model == "tcn":
+        return TemporalCNN(
+            input_dim=3,
+            hidden_size=args.hidden,
+            horizon=args.horizon,
+            num_layers=args.layers,
+            dropout=args.dropout,
+        )
+
+    if args.model == "res_mlp":
+        return ResidualMLP(
+            context_len=args.context,
+            input_dim=3,
+            hidden_size=args.hidden,
+            horizon=args.horizon,
+            num_blocks=args.blocks,
+            dropout=args.dropout,
+        )
+
+    if args.model == "jepa":
+        return HeadPoseJEPA(
+            input_dim=3,
+            latent_dim=args.hidden,
+            horizon=args.horizon,
+            hidden_size=args.hidden * 2,
+            dropout=args.dropout,
+        )
+
     raise ValueError(f"Unsupported model: {args.model}")
 
 
@@ -166,6 +210,12 @@ def training_config(args, h5_path):
 
     return {
         "model": args.model,
+        "loss_type": args.loss_type,
+        "accel_lambda": args.accel_lambda,
+        "max_weight": args.max_weight,
+        "step20_weight": args.step20_weight,
+        "dev_weight": args.dev_weight,
+        "kin_accel_weight": args.kin_accel_weight,
         "h5_path": str(h5_path),
         "h5_size": stat.st_size,
         "h5_mtime_ns": stat.st_mtime_ns,
@@ -213,7 +263,7 @@ def restore_rng_state(state):
         torch.as_tensor(
             state["torch"],
             dtype=torch.uint8,
-            device="cpu"
+            device="cpu",
         )
     )
 
@@ -364,6 +414,12 @@ def train(args):
 
     print(f"HDF5: {h5_path}")
     print(f"Model: {args.model}")
+    print(
+        f"Loss: {args.loss_type} "
+        f"(lambda={args.accel_lambda}, max_w={args.max_weight}, "
+        f"step20_w={args.step20_weight}, dev_w={args.dev_weight}, "
+        f"kin_accel_w={args.kin_accel_weight})"
+    )
     print(f"Device: {device}")
     print(f"Users: {len(users)}")
     print(f"Train users: {len(train_users)}")
@@ -528,10 +584,41 @@ def train(args):
                     q_last,
                 )
 
-                loss, _degrees = geodesic_loss(
-                    prediction,
-                    future,
-                )
+                if args.loss_type == "accel_dev":
+                    accel = compute_historical_acceleration(
+                        deltas,
+                        SAMPLE_RATE_HZ,
+                    )
+                    loss, _degrees, _weights = acceleration_deviation_geodesic_loss(
+                        prediction,
+                        future,
+                        accel,
+                        q_last=q_last,
+                        accel_lambda=args.accel_lambda,
+                        max_weight=args.max_weight,
+                        step20_weight=args.step20_weight,
+                        dev_weight=args.dev_weight,
+                        kin_accel_weight=args.kin_accel_weight,
+                    )
+                elif args.loss_type == "accel_weighted":
+                    accel = compute_historical_acceleration(
+                        deltas,
+                        SAMPLE_RATE_HZ,
+                    )
+                    loss, _degrees, _weights = acceleration_weighted_geodesic_loss(
+                        prediction,
+                        future,
+                        accel,
+                        accel_lambda=args.accel_lambda,
+                        max_weight=args.max_weight,
+                        step20_weight=args.step20_weight,
+                    )
+                else:
+                    loss, _degrees = geodesic_loss(
+                        prediction,
+                        future,
+                        step20_weight=args.step20_weight,
+                    )
 
             if not torch.isfinite(loss).item():
                 raise RuntimeError(
@@ -748,9 +835,24 @@ def parse_args(argv=None):
             "msrtn",
             "kinematics",
             "kinematics_tcn",
+            "tcn",
+            "res_mlp",
+            "jepa",
         ],
         default="gru",
     )
+
+    parser.add_argument(
+        "--loss-type",
+        choices=["geodesic", "accel_weighted", "accel_dev"],
+        default="accel_dev",
+        help="Loss function: geodesic, accel_weighted, or accel_dev",
+    )
+    parser.add_argument("--accel-lambda", type=float, default=0.5)
+    parser.add_argument("--max-weight", type=float, default=1.75)
+    parser.add_argument("--step20-weight", type=float, default=1.0)
+    parser.add_argument("--dev-weight", type=float, default=0.25)
+    parser.add_argument("--kin-accel-weight", type=float, default=1.0)
 
     parser.add_argument("--context", type=int, default=CONTEXT_LENGTH)
     parser.add_argument("--horizon", type=int, default=HORIZON)
@@ -764,7 +866,7 @@ def parse_args(argv=None):
     parser.add_argument("--dropout", type=float, default=0.1)
 
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--patience", type=int, default=4)
@@ -774,7 +876,7 @@ def parse_args(argv=None):
 
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="mps")
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--resume", type=Path, default=None)
 

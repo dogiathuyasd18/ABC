@@ -1,12 +1,12 @@
 {
-  "created_utc": "2026-11-07T20:27:36.122017+00:00",
+  "created_utc": "2026-11-14T19:37:22.590778+00:00",
   "schema_version": "2.0",
-  "preprocessing_version": "2.0",
+  "preprocessing_version": "2.1",
   "spec_version": "9th-abc-challenge-data-page",
   "seed": 0,
   "manifest": {
     "schema_version": "2.0",
-    "preprocessing_version": "2.0",
+    "preprocessing_version": "2.1",
     "spec_version": "9th-abc-challenge-data-page",
     "quaternion_order": "x,y,z,w",
     "filter": {
@@ -19,8 +19,8 @@
       "max_sampling_rate_hz": 110.0,
       "min_sweep_degrees": 17.0,
       "min_velocity_deg_s": 15.0,
-      "sweep_comparison": "greater_than",
-      "velocity_comparison": "greater_than",
+      "sweep_comparison": "greater_or_equal",
+      "velocity_comparison": "greater_or_equal",
       "euler_order": "xyz",
       "quaternion_axes_xror": [
         "i",
@@ -30,7 +30,7 @@
       ]
     },
     "clean": {
-      "preprocessing_version": "2.0",
+      "preprocessing_version": "2.1",
       "near_zero_norm": 1e-08,
       "unit_norm_atol": 1e-05,
       "duplicate_quat_atol": 1e-06,
@@ -51,65 +51,72 @@
     }
   },
   "session_filtering": {
-    "n_users_inspected": 473,
-    "n_sessions_inspected": 3055,
-    "n_pass": 3055,
-    "n_fail": 0,
+    "n_users_inspected": 37,
+    "n_sessions_inspected": 4074,
+    "n_pass": 400,
+    "n_fail": 3674,
     "reject_reasons": {
-      "PASS": 3055
+      "PASS": 400,
+      "duplicate_timestamps": 505,
+      "sweep_below_threshold": 2243,
+      "sampling_rate_out_of_range": 732,
+      "too_few_samples_after_trim": 34,
+      "no_valid_motion_windows": 15,
+      "non_monotonic_timestamps": 142,
+      "velocity_below_threshold": 3
     },
     "distributions": {
       "sampling_rate_hz": {
-        "n": 3055,
-        "min": 85.05645684620376,
-        "median": 89.89849108367626,
-        "mean": 89.92128781699995,
-        "p95": 91.02222222222223,
-        "max": 106.3896103896104
+        "n": 4040,
+        "min": 35.52086720867209,
+        "median": 89.65253077975376,
+        "mean": 89.48048421033606,
+        "p95": 119.70592739141682,
+        "max": 146.28571428571428
       },
       "frames_after_trim": {
-        "n": 3055,
-        "min": 285.0,
-        "median": 15021.0,
-        "mean": 13921.363338788871,
-        "p95": 23521.09999999999,
-        "max": 48624.0
+        "n": 4074,
+        "min": 0.0,
+        "median": 15369.5,
+        "mean": 16614.138438880706,
+        "p95": 32322.649999999987,
+        "max": 151533.0
       },
       "session_sweep": {
-        "n": 3055,
-        "min": 17.001537632457346,
-        "median": 20.53472597289158,
-        "mean": 25.08762324559306,
-        "p95": 36.154427362334275,
-        "max": 358.45647103670484
+        "n": 2646,
+        "min": 1.091923465002934,
+        "median": 7.976093160144998,
+        "mean": 9.881116667258219,
+        "p95": 22.582133192369547,
+        "max": 77.27567008060628
       },
       "session_velocity": {
-        "n": 3055,
-        "min": 15.012258043012343,
-        "median": 25.78004172607961,
-        "mean": 27.841646428745467,
-        "p95": 44.49504561779889,
-        "max": 242.5252298586244
+        "n": 2646,
+        "min": 2.0198048734637495,
+        "median": 18.582395168015903,
+        "mean": 19.763928691575106,
+        "p95": 32.103726947767285,
+        "max": 80.26570926456104
       }
     }
   },
   "training_usability": {
-    "n_users": 20,
-    "n_sessions": 193,
-    "n_segments": 329,
-    "n_resampled_samples": 2835029,
-    "n_interpolated_samples": 2833304,
-    "n_sessions_with_window": 192,
+    "n_users": 37,
+    "n_sessions": 273,
+    "n_segments": 513,
+    "n_resampled_samples": 3943844,
+    "n_interpolated_samples": 3941051,
+    "n_sessions_with_window": 272,
     "n_sessions_without_window": 1,
-    "n_usable_windows": 136263,
+    "n_usable_windows": 189443,
     "windows_per_user": {
       "00743d56-a912-4ec7-a9d4-3e6e22756488": 774,
       "007a16e6-6862-40f1-b7ee-07c959e4ac92": 1063,
       "007d3ac4-8443-4430-94e2-25b9474e2ce6": 26012,
       "007e46f7-4f73-4dfa-8e4f-8258563abd57": 1882,
       "00803645-7423-4083-9637-627a4c32759f": 996,
-      "0081a211-d913-4ee8-b71a-9fd1ed7d3e2d": 9592,
-      "008a4099-eadc-4013-b4d6-69ea848c6949": 51048,
+      "0081a211-d913-4ee8-b71a-9fd1ed7d3e2d": 9591,
+      "008a4099-eadc-4013-b4d6-69ea848c6949": 54717,
       "008c5ce1-7db3-416f-ab82-21b22c6266ee": 10741,
       "00926ea3-8296-4f72-959d-a9b289bb541e": 797,
       "00a82f96-9871-4d8d-a1c7-c739e34f928f": 1530,
@@ -122,7 +129,24 @@
       "00f13eb1-6bc7-4e38-8525-5b412af4b9b7": 1578,
       "00f4ddc2-a595-47a4-8883-16284807a850": 655,
       "00f73e02-eb53-4387-bd0f-5c701474261f": 72,
-      "00fa7124-4838-4275-a473-1424cb52f42f": 1214
+      "00fa7124-4838-4275-a473-1424cb52f42f": 1214,
+      "010c1580-1568-4954-839c-eeaede4653b2": 504,
+      "011466a1-2ccf-4527-ada7-2d9d0b73e521": 664,
+      "01194370-1f58-42d1-9f60-1f008dd1efa1": 283,
+      "011c3958-fb8f-463d-8087-4adee42f1ac8": 168,
+      "01228be8-0e08-4754-ad8a-d9155d89c972": 1022,
+      "012b36e4-6179-44c5-bd33-9856cecf0e34": 3584,
+      "012d148a-147c-43ab-a70c-485e592ee6dd": 64,
+      "01313d6f-ae28-4e0b-95d7-441e28336d9a": 743,
+      "01335232-b659-465d-ba70-890217fed5cc": 1749,
+      "01397f19-a202-4273-bb6b-92feec3b77ce": 1683,
+      "013c1fe6-2785-4656-97da-2ab619da612b": 1596,
+      "014f19a1-8a63-4d7f-8a77-5fb3fba247b9": 33,
+      "014f9ee8-8c6a-4359-8242-7e54641d63e1": 7921,
+      "015137d4-ee38-4183-9328-50e623658592": 3381,
+      "015849fe-70c8-4b76-8dab-f412ec8e935a": 6503,
+      "015b9344-c81a-4bb0-8c28-eecc6ebc62b3": 73,
+      "015d7f31-38b5-43ce-8a0e-15966af702a8": 19541
     },
     "window_config": {
       "context": 400,
@@ -131,10 +155,10 @@
     }
   },
   "inter_sample_gaps_resampled": {
-    "n": 2834700,
-    "min": 0.007895507817465841,
+    "n": 3943331,
+    "min": 0.009999999999976694,
     "median": 0.00999999999999801,
-    "mean": 0.009999985037981274,
+    "mean": 0.010000000000000004,
     "p95": 0.010000000000019327,
     "max": 0.010000000000047748
   }

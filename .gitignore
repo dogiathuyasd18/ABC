@@ -30,3 +30,13 @@ __pycache__/
 
 # Intermediate data
 data/processed/*.csv
+# Dataset
+data/
+*.h5
+*.hdf5
+
+# Python & macOS
+venv/
+.venv/
+__pycache__/
+.DS_Store

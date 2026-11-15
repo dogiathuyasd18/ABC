@@ -8,7 +8,7 @@ from scipy.stats import pearsonr, spearmanr
 from src.data.dataset import load_segments
 
 
-H5_PATH = Path("data/processed/head_pose_v2.h5")
+H5_PATH = Path("data/processed/head_pose_full_v3.h5")
 PRED_PATH = Path("outputs/gru_val_seed42_predictions.npz")
 OUT_DIR = Path("outputs")
 DT = 0.01

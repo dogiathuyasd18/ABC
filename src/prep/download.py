@@ -1,4 +1,3 @@
-
 """Selective BOXRR-23 download with PASS allowlist, checkpoint, retry, and resume."""
 
 from __future__ import annotations
@@ -66,7 +65,6 @@ def _retry(action, retries: int, sleep_s: float, label: str):
     raise last_error
 
 
-
 def _normalize_archive_path(value: str, raw_dir: Path) -> str:
     path = Path(value)
 
@@ -86,7 +84,6 @@ def _normalize_archive_path(value: str, raw_dir: Path) -> str:
             path = Path(*parts[1:])
 
     return path.as_posix()
-
 
 
 def load_pass_sessions(
@@ -496,12 +493,12 @@ def run_download(
 
     for remote in archives:
         if remote in completed:
-            LOGGER.info("Archive already completed: %s", remote)
+            LOGGER.time_info = LOGGER.info("Archive already completed: %s", remote)  # type: ignore
             continue
 
         if (
             shutil.disk_usage(paths.raw_dir).free
-            < download_cfg.min_free_gb * 1024**3
+            < download_cfg.min_free_gb * (1024**3)
         ):
             LOGGER.warning(
                 "Stopping: free disk below %.1f GB",
